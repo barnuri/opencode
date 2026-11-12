@@ -15,7 +15,6 @@ import {
   DialogHeader,
   DialogLayout,
   dialogWidth,
-  drawerWidth,
   useDialog,
   type DialogContext,
 } from "./dialog"
@@ -261,18 +260,13 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   })
 
   const dimensions = useTerminalDimensions()
-  const drawer = () => dialog.stack.at(-1)?.drawer
-  const limit = createMemo(() =>
-    drawer() ? Math.max(1, dimensions().height - 9) : Math.floor(dimensions().height / 2) - 6,
-  )
+  const limit = createMemo(() => Math.floor(dimensions().height / 2) - 6)
   // Under new designs an overflowing list gives its last row to a "…" indicator.
   const overflows = createMemo(() => newDesigns() && rows() > limit())
   // Computed once here so per-row details do not each call useTerminalDimensions(),
   // which registers one renderer resize listener per mounted row.
   const detailsWidth = createMemo(() =>
-    dialogSelectContentWidth(
-      drawer() ? drawerWidth(dimensions().width) : Math.min(dialogWidth(dialog.size), dimensions().width),
-    ),
+    dialogSelectContentWidth(Math.min(dialogWidth(dialog.size), dimensions().width)),
   )
   const [moreBelow, setMoreBelow] = createSignal(false)
   // At the bottom of the list the "…" row hands its row back to the list, so the dialog keeps its height.
