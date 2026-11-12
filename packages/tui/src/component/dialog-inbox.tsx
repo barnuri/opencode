@@ -65,11 +65,13 @@ export function DialogInbox() {
     if (!entry) return
     setKey(entry.key)
     const index = entries().indexOf(entry)
+    // Each section after the first has a blank line above its header.
+    const line = index + entries().slice(1, index + 1).filter((item) => !item.row).length
     // The data can arrive before the scroll viewport has its measured height.
     const reveal = () => {
       if (!scroll || scroll.isDestroyed) return
-      if (index < scroll.scrollTop) scroll.scrollTo(index)
-      if (index >= scroll.scrollTop + scroll.viewport.height) scroll.scrollTo(index - scroll.viewport.height + 1)
+      if (line < scroll.scrollTop) scroll.scrollTo(line)
+      if (line >= scroll.scrollTop + scroll.viewport.height) scroll.scrollTo(line - scroll.viewport.height + 1)
     }
     renderer.once(CliRenderEvents.FRAME, reveal)
     onCleanup(() => renderer.off(CliRenderEvents.FRAME, reveal))
@@ -183,12 +185,13 @@ export function DialogInbox() {
           }
         >
           <Index each={entries()}>
-            {(entry) => {
+            {(entry, index) => {
               const active = () => selected()?.key === entry().key
               return (
                 <box
                   width="100%"
                   height={1}
+                  marginTop={index > 0 && !entry().row ? 1 : 0}
                   flexShrink={0}
                   flexDirection="row"
                   gap={1}
@@ -219,6 +222,7 @@ export function DialogInbox() {
                     {(row) => (
                       <>
                         <text
+                          marginLeft={2}
                           minWidth={0}
                           flexBasis={0}
                           flexShrink={1}

@@ -111,7 +111,7 @@ test("attention rows explain their action; headers fold with arrows or a click",
   expect(frame).not.toContain("Atlas")
   app.mockInput.pressKey("HOME")
   app.mockInput.pressArrow("down")
-  await app.waitForFrame((frame) => frame.includes("▌ Deploy"))
+  await app.waitForFrame((frame) => /▌ +Deploy/.test(frame))
   app.mockInput.pressArrow("left")
   await app.waitForFrame((frame) => frame.includes("▌ ▸ Needs attention 2") && !frame.includes("Review permission"))
   app.mockInput.pressArrow("down")
