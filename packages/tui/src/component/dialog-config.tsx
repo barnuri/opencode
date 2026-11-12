@@ -57,10 +57,10 @@ export const settings: Setting[] = [
     keywords: ["motion", "effects"],
   },
   {
-    title: "Inbox sidebar",
+    title: "Inbox on launch",
     category: "Session",
     path: ["session", "inbox"],
-    description: "Show sessions across locations on the connected server",
+    description: "Open the session Inbox overlay when the TUI starts",
     default: false,
     values: [false, true],
     labels: ["off", "on"],
