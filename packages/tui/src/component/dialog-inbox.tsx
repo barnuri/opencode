@@ -1,13 +1,27 @@
+import { CliRenderEvents, MouseButton, TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
+import fuzzysort from "fuzzysort"
 import path from "node:path"
+import { batch, createEffect, createMemo, createSignal, Index, onCleanup, Show } from "solid-js"
+import { useConfig, useCursorStyle } from "../config"
 import { Keymap } from "../context/keymap"
 import { useRoute } from "../context/route"
 import { useSessionTabs } from "../context/session-tabs"
 import { useTheme } from "../context/theme"
-import { DIALOG_LIST_INSET, useDialog } from "../ui/dialog"
-import { DialogSelect } from "../ui/dialog-select"
-import { useInbox } from "./inbox-data"
+import { DialogHeader, drawerWidth, useDialog } from "../ui/dialog"
+import { moveSelection } from "../ui/select-controller"
+import { getScrollAcceleration } from "../util/scroll"
+import { type InboxRow, useInbox } from "./inbox-data"
 
 export const DialogInboxKey = Symbol("DialogInbox")
+
+type Entry = { key: string; section: string; count: number; row?: InboxRow }
+
+function label(detail: string) {
+  if (detail === "Question") return "Answer question"
+  if (detail === "Approval") return "Review permission"
+  return detail
+}
 
 export function DialogInbox() {
   const inbox = useInbox()
@@ -15,39 +29,237 @@ export function DialogInbox() {
   const tabs = useSessionTabs()
   const route = useRoute()
   const dialog = useDialog()
-  Keymap.createLayer(() => ({ mode: "modal", bindings: ["session.inbox.toggle"] }))
+  const config = useConfig().data
+  const cursor = useCursorStyle()
+  const dimensions = useTerminalDimensions()
+  const renderer = useRenderer()
+  const width = () => drawerWidth(dimensions().width)
+  const [query, setQuery] = createSignal("")
+  const [folds, setFolds] = createSignal(new Set<string>())
+  const [searchFolds, setSearchFolds] = createSignal(new Set<string>())
+  const collapsed = () => (query() ? searchFolds() : folds())
+  const [key, setKey] = createSignal(tabs.current())
+  let scroll: ScrollBoxRenderable | undefined
 
+  const entries = createMemo(() =>
+    inbox.sections().flatMap((section): Entry[] => {
+      const rows = query()
+        ? fuzzysort
+            .go(query(), section.rows, {
+              keys: ["title", "directory", (row) => `${section.title} ${label(row.detail)}`],
+            })
+            .map((hit) => hit.obj)
+        : section.rows
+      if (!rows.length) return []
+      const header = { key: section.title, section: section.title, count: rows.length }
+      return collapsed().has(section.title)
+        ? [header]
+        : [header, ...rows.map((row) => ({ ...header, key: row.id, row }))]
+    }),
+  )
+  const selected = createMemo(
+    () => entries().find((entry) => entry.key === key()) ?? entries().find((entry) => entry.row) ?? entries()[0],
+  )
+  createEffect(() => {
+    const entry = selected()
+    if (!entry) return
+    setKey(entry.key)
+    const index = entries().indexOf(entry)
+    // The data can arrive before the scroll viewport has its measured height.
+    const reveal = () => {
+      if (!scroll || scroll.isDestroyed) return
+      if (index < scroll.scrollTop) scroll.scrollTo(index)
+      if (index >= scroll.scrollTop + scroll.viewport.height) scroll.scrollTo(index - scroll.viewport.height + 1)
+    }
+    renderer.once(CliRenderEvents.FRAME, reveal)
+    onCleanup(() => renderer.off(CliRenderEvents.FRAME, reveal))
+  })
+
+  function fold(section: string, close: boolean) {
+    if (collapsed().has(section) === close) return
+    const next = new Set(collapsed())
+    if (close) next.add(section)
+    else next.delete(section)
+    batch(() => {
+      setKey(section)
+      const update = query() ? setSearchFolds : setFolds
+      update(next)
+    })
+  }
+  function open(entry = selected()) {
+    if (!entry) return
+    if (!entry.row) return fold(entry.section, !collapsed().has(entry.section))
+    dialog.clear()
+    if (tabs.enabled()) return tabs.select(entry.row.id)
+    route.navigate({ type: "session", sessionID: entry.row.id })
+  }
+  function move(delta: number) {
+    const index = entries().findIndex((item) => item.key === selected()?.key)
+    setKey(entries()[moveSelection(index, { count: entries().length, delta, policy: "wrap" })]?.key)
+  }
+  function section(delta: number) {
+    const headers = entries().filter((item) => !item.row)
+    const index = headers.findIndex((item) => item.section === selected()?.section)
+    setKey(headers[moveSelection(index, { count: headers.length, delta, policy: "wrap" })]?.key)
+  }
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    bindings: ["session.inbox.toggle"],
+    commands: [
+      { id: "dialog.select.prev", run: () => move(-1) },
+      { id: "dialog.select.next", run: () => move(1) },
+      { id: "dialog.select.page_up", run: () => move(-10) },
+      { id: "dialog.select.page_down", run: () => move(10) },
+      {
+        id: "dialog.select.home",
+        run: () => {
+          setKey(entries()[0]?.key)
+        },
+      },
+      {
+        id: "dialog.select.end",
+        run: () => {
+          setKey(entries().at(-1)?.key)
+        },
+      },
+      { id: "dialog.select.submit", run: () => open() },
+      { bind: "alt+up", run: () => section(-1) },
+      { bind: "alt+down", run: () => section(1) },
+      {
+        bind: "left",
+        run: () => {
+          const entry = selected()
+          if (entry) fold(entry.section, true)
+        },
+      },
+      {
+        bind: "right",
+        run: () => {
+          const entry = selected()
+          if (entry) fold(entry.section, false)
+        },
+      },
+    ],
+  }))
+
+  function accent(detail: string) {
+    if (detail === "Approval") return theme.text.feedback.warning.base
+    if (detail === "Failed") return theme.text.feedback.error.base
+    if (detail === "Done") return theme.text.feedback.success.base
+    return theme.text.feedback.info.base
+  }
   return (
-    <DialogSelect
-      title="Inbox"
-      placeholder="Search inbox sessions…"
-      preserveSelection
-      current={tabs.current()}
-      sectionNavigation
-      options={
-        inbox.loading()
-          ? []
-          : inbox.sections().flatMap((section) =>
-              section.rows.map((row) => ({
-                title: row.title,
-                value: row.id,
-                category: section.title,
-                details: [[row.detail, path.basename(row.directory) || row.directory].filter(Boolean).join(" · ")],
-                searchText: `${row.directory} ${row.detail}`,
-              })),
-            )
-      }
-      emptyView={
-        <text paddingLeft={DIALOG_LIST_INSET} fg={theme.text.muted}>
-          {inbox.loading() ? "Loading sessions…" : "No inbox sessions"}
-        </text>
-      }
-      footer={<text fg={theme.text.muted}>↑↓ move · enter open · esc close</text>}
-      onSelect={(option) => {
-        dialog.clear()
-        if (tabs.enabled()) return tabs.select(option.value)
-        route.navigate({ type: "session", sessionID: option.value })
-      }}
-    />
+    <box paddingX={1} paddingBottom={1} flexGrow={1} minHeight={0} gap={1}>
+      <DialogHeader title="Inbox" />
+      <input
+        focused
+        cursorStyle={cursor()}
+        cursorColor={theme.text.base}
+        focusedTextColor={theme.text.base}
+        focusedBackgroundColor={theme.background.formfield.focused}
+        placeholderColor={theme.text.muted}
+        placeholder="Search inbox sessions…"
+        onInput={(value) =>
+          batch(() => {
+            setQuery(value.trim())
+            setSearchFolds(new Set<string>())
+            setKey(value.trim() ? undefined : tabs.current())
+          })
+        }
+      />
+      <scrollbox
+        flexGrow={1}
+        minHeight={0}
+        ref={(r) => (scroll = r)}
+        scrollAcceleration={getScrollAcceleration(config)}
+        scrollbarOptions={{ visible: false }}
+      >
+        <Show
+          when={entries().length}
+          fallback={
+            <text fg={theme.text.muted}>
+              {inbox.loading() ? "Loading sessions…" : query() ? "No matching sessions" : "No inbox sessions"}
+            </text>
+          }
+        >
+          <Index each={entries()}>
+            {(entry) => {
+              const active = () => selected()?.key === entry().key
+              return (
+                <box
+                  width="100%"
+                  height={1}
+                  flexShrink={0}
+                  flexDirection="row"
+                  gap={1}
+                  backgroundColor={active() ? theme.background.raised.high : undefined}
+                  onMouseMove={() => setKey(entry().key)}
+                  onMouseDown={(event) => {
+                    if (event.button === MouseButton.LEFT) event.preventDefault()
+                  }}
+                  onMouseUp={(event) => {
+                    if (event.button === MouseButton.LEFT) open(entry())
+                  }}
+                >
+                  <text width={1} fg={theme.text.formfield.focused}>
+                    {active() ? "▌" : " "}
+                  </text>
+                  <Show
+                    when={entry().row}
+                    fallback={
+                      <text fg={theme.text.base} wrapMode="none" truncate>
+                        <b>
+                          {collapsed().has(entry().section) ? "▸ " : "▾ "}
+                          {entry().section}
+                        </b>
+                        <span style={{ fg: theme.text.muted }}> {entry().count}</span>
+                      </text>
+                    }
+                  >
+                    {(row) => (
+                      <>
+                        <text
+                          minWidth={0}
+                          flexBasis={0}
+                          flexShrink={1}
+                          flexGrow={1}
+                          height={1}
+                          truncate
+                          wrapMode="none"
+                          fg={theme.text.base}
+                          attributes={tabs.current() === row().id ? TextAttributes.BOLD : undefined}
+                        >
+                          {row().title}
+                        </text>
+                        <Show when={row().detail}>
+                          <text flexShrink={0} wrapMode="none" fg={accent(row().detail)}>
+                            {label(row().detail)}
+                          </text>
+                        </Show>
+                        <Show when={width() >= 84 || (query() && width() >= 64)}>
+                          <text
+                            width={Math.min(26, Math.floor(width() / 3))}
+                            flexShrink={0}
+                            height={1}
+                            truncate
+                            wrapMode="none"
+                            fg={theme.text.muted}
+                          >
+                            Dir: {path.basename(row().directory) || row().directory}
+                          </text>
+                        </Show>
+                      </>
+                    )}
+                  </Show>
+                </box>
+              )
+            }}
+          </Index>
+        </Show>
+      </scrollbox>
+      <text height={1} truncate wrapMode="none" fg={theme.text.muted}>
+        ↑↓ move · ←→ fold · enter open · esc close
+      </text>
+    </box>
   )
 }

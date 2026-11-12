@@ -60,7 +60,7 @@ test("scroll through a long inbox without leaving the overlay", async () => {
   }))
   await using app = await createAppFixture({
     width: 64,
-    height: 18,
+    height: 15,
     config: { animations: false, session: { inbox: true } },
     fetch: (url) => (url.pathname === "/api/session" ? json({ data: sessions, cursor: {} }) : undefined),
   })
@@ -73,4 +73,59 @@ test("scroll through a long inbox without leaving the overlay", async () => {
     .findIndex((line) => line.includes("Wheel session 0"))
   for (let i = 0; i < 15; i++) await app.mockMouse.scroll(12, y, "down")
   await app.waitForFrame((frame) => frame.includes("Wheel session 9") && !frame.includes("Wheel session 0"))
+})
+
+test("attention rows explain their action; headers fold with arrows or a click", async () => {
+  const sessions = [
+    {
+      ...session("ses_question"),
+      title: "Choose " + "a very long title ".repeat(10),
+      location: { directory: "/work/Atlas" },
+    },
+    { ...session("ses_permission"), title: "Deploy", location: { directory: "/work/Atlas" } },
+    { ...session("ses_recent"), title: "Finished earlier" },
+  ]
+  await using app = await createAppFixture({
+    width: 100,
+    height: 24,
+    config: { animations: false, session: { inbox: true } },
+    fetch: (url) => {
+      if (url.pathname === "/api/session") return json({ data: sessions, cursor: {} })
+      if (url.searchParams.get("location[directory]") !== "/work/Atlas") return
+      if (url.pathname === "/api/permission/request")
+        return json({ data: [{ id: "permission", sessionID: "ses_permission", action: "read", resources: ["a"] }] })
+      if (url.pathname === "/api/form")
+        return json({ data: [{ id: "form", sessionID: "ses_question", title: "Answer", fields: [] }] })
+    },
+  })
+  await app.ready
+  await app.waitForFrame(
+    (frame) =>
+      frame.includes("▾ Needs attention 2") &&
+      frame.includes("Answer question") &&
+      app.renderer.currentFocusedEditor instanceof InputRenderable,
+  )
+  const frame = app.captureCharFrame()
+  expect(frame).toMatch(/Choose[^\n]+Answer question/)
+  expect(frame).toMatch(/Deploy[^\n]+Review permission/)
+  expect(frame).not.toContain("Atlas")
+  app.mockInput.pressKey("HOME")
+  app.mockInput.pressArrow("down")
+  await app.waitForFrame((frame) => frame.includes("▌ Deploy"))
+  app.mockInput.pressArrow("left")
+  await app.waitForFrame((frame) => frame.includes("▌ ▸ Needs attention 2") && !frame.includes("Review permission"))
+  app.mockInput.pressArrow("down")
+  await app.waitForFrame((frame) => frame.includes("▌ ▾ Recent 1"))
+  app.mockInput.pressArrow("up")
+  app.mockInput.pressArrow("right")
+  await app.waitForFrame((frame) => frame.includes("▌ ▾ Needs attention 2") && frame.includes("Review permission"))
+  const lines = app.captureCharFrame().split("\n")
+  const y = lines.findIndex((line) => line.includes("Needs attention"))
+  await app.mockMouse.click(lines[y]!.indexOf("Needs attention"), y)
+  await app.waitForFrame((frame) => frame.includes("▸ Needs attention 2") && !frame.includes("Answer question"))
+  await app.mockInput.typeText("Atlas")
+  await app.waitForFrame((frame) => frame.includes("Answer question") && !frame.includes("Finished earlier"))
+  app.resize(180, 24)
+  await app.waitForFrame((frame) => /Choose[^\n]+Answer question[^\n]+Dir: Atlas/.test(frame))
+  expect(app.captureCharFrame()).toMatch(/Deploy[^\n]+Review permission[^\n]+Dir: Atlas/)
 })
